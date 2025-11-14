@@ -1,5 +1,12 @@
 // src/pages/Inflow.jsx — Proago CRM
-// v2025-09-03 • Inflow: local-edit cells (fix 1-char + Safari crash), name editable, tighter column locking
+// v2025-11-14 • Inflow: column alignment + ghost Calls + per-section memory (date/time/comment) + comment modal + auto-sort
+// Notes:
+// - Keeps your original structure, imports, audit log, importers, templates.
+// - Columns are locked by colgroup in ALL sections -> perfect alignment.
+// - Interview/Formation render a ghost Calls cell to keep symmetry.
+// - Move preserves/recalls date/time/comment per section via _stageMeta.
+// - Comment modal per row; stored per section in _stageMeta[section].comment.
+// - Auto-sort by date then time inside each section after edits/moves/add/import.
 
 import React, { useMemo, useRef, useState } from "react";
 import { Button } from "../components/ui/button";
@@ -8,12 +15,13 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Badge } from "../components/ui/badge";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog";
-import { Upload, Trash2, Plus, ChevronUp, ChevronDown, Bell } from "lucide-react";
+import { Upload, Trash2, Plus, ChevronUp, ChevronDown, Bell, MessageCircle } from "lucide-react";
 import * as U from "../util.js";
 
 const { titleCase, clone, fmtISO, addAuditLog, load, K, DEFAULT_SETTINGS } = U;
 
 // --- col widths identical in all sections (sum = 100%) ---
+// (Using your table + colgroup approach to guarantee alignment)
 const COLS = [
   { w: "18%" }, // Name
   { w: "18%" }, // Mobile
@@ -21,8 +29,8 @@ const COLS = [
   { w: "12%" }, // Source
   { w: "12%" }, // Date
   { w: "8%"  }, // Time
-  { w: "4%"  }, // Calls (column width unchanged for alignment)
-  { w: "8%"  }, // Actions
+  { w: "4%"  }, // Calls (ghosted in Interview/Formation to keep symmetry)
+  { w: "8%"  }, // Actions (includes comment button)
 ];
 
 // fixed-size action slots (so rows never shift)
@@ -194,29 +202,26 @@ CEO von Proago`,
 function compileTemplate(tpl, lead) {
   const ddmm = lead.date ? new Date(lead.date).toLocaleDateString("en-GB") : "(dd/mm/yyyy)";
   const t = lead.time || "(time)";
-  return (
-    <h1 style={{ color: "red", fontSize: "28px", textAlign: "center", padding: "12px 0" }}>✅ THIS IS THE REAL INFLOW FILE ✅</h1>tpl || "")
+  return (tpl || "")
     .replaceAll("{name}", titleCase(lead.name || ""))
     .replaceAll("{date}", ddmm)
     .replaceAll("{time}", t);
 }
 
-// CHANGE: bell shows in Leads when calls >= 1
+// ---- Visual bell logic (unchanged for interview/formation; leads at >=3) ----
 function shouldShowBell(stage, lead) {
-  if (stage === "leads") return (
-    <h1 style={{ color: "red", fontSize: "28px", textAlign: "center", padding: "12px 0" }}>✅ THIS IS THE REAL INFLOW FILE ✅</h1>lead.calls ?? 0) >= 1;
+  if (stage === "leads") return (lead.calls ?? 0) >= 3;        // max calls reached
   if (stage === "interview" || stage === "formation") return Boolean(lead.date && lead.time);
   return false;
 }
 
-// ---- Small local-edit cell that only commits onBlur/Enter (prevents 1-char bug & heavy reflows)
+// ---- Small local-edit cell that only commits onBlur/Enter (kept)
 function EditableCell({ value, onCommit, type = "text", placeholder, inputMode, className = "" }) {
   const [val, setVal] = useState(value ?? "");
   React.useEffect(() => { setVal(value ?? ""); }, [value]);
   const commit = () => { if (val !== value) onCommit(val); };
   const onKeyDown = (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); e.currentTarget.blur(); } };
   return (
-    <h1 style={{ color: "red", fontSize: "28px", textAlign: "center", padding: "12px 0" }}>✅ THIS IS THE REAL INFLOW FILE ✅</h1>
     <Input
       type={type}
       inputMode={inputMode}
@@ -230,7 +235,7 @@ function EditableCell({ value, onCommit, type = "text", placeholder, inputMode, 
   );
 }
 
-// ---------- New Lead Dialog ----------
+// ---------- New Lead Dialog (kept) ----------
 const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
   const [name, setName] = useState("");
   const [prefix, setPrefix] = useState("+352");
@@ -269,7 +274,6 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
   };
 
   return (
-    <h1 style={{ color: "red", fontSize: "28px", textAlign: "center", padding: "12px 0" }}>✅ THIS IS THE REAL INFLOW FILE ✅</h1>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent size="md">
         <DialogHeader><DialogTitle className="text-center">Lead</DialogTitle></DialogHeader>
@@ -336,22 +340,45 @@ const AddLeadDialog = ({ open, onOpenChange, onSave }) => {
   );
 };
 
+// ---- Sorting helpers (date asc, then time asc) -----------------------------
+const ts = (d, t) => {
+  if (!d) return Number.POSITIVE_INFINITY;
+  try {
+    const [y, m, dd] = d.split("-").map((n) => parseInt(n, 10));
+    const [hh = 0, mm = 0] = (t || "00:00").split(":").map((n) => parseInt(n, 10));
+    return new Date(y, (m || 1) - 1, dd, hh, mm).getTime();
+  } catch { return Number.POSITIVE_INFINITY; }
+};
+const sortAsc = (a, b) => {
+  const A = ts(a.date, a.time), B = ts(b.date, b.time);
+  if (A < B) return -1; if (A > B) return 1; return 0;
+};
+
 export default function Inflow({ pipeline, setPipeline, onHire }) {
   const fileRef = useRef(null);
   const [addOpen, setAddOpen] = useState(false);
 
-  // Notify state
+  // Notify state (kept)
   const [notifyOpen, setNotifyOpen] = useState(false);
   const [notifyText, setNotifyText] = useState("");
   const [notifyLead, setNotifyLead] = useState(null);
   const [notifyStage, setNotifyStage] = useState(null);
   const [notifyLang, setNotifyLang] = useState("lb"); // lb | fr | de
 
+  // Comment dialog state
+  const [commentDlg, setCommentDlg] = useState({ open: false, section: null, id: null, value: "" });
+
   const stableUpdate = (updater) =>
-    setPipeline((prev) => { const next = clone(prev); updater(next); return next; });
+    setPipeline((prev) => { const next = clone(prev); updater(next);
+      // auto-sort each section after any change
+      next.leads = [...(next.leads || [])].sort(sortAsc);
+      next.interview = [...(next.interview || [])].sort(sortAsc);
+      next.formation = [...(next.formation || [])].sort(sortAsc);
+      return next;
+    });
 
   // ---------- Stage move with memory ----------
-  // Forward: reset; Backward: restore previous values for the target stage.
+  // Now: ALWAYS restore target's prior values if they exist (forward or backward).
   const move = (item, from, to) => {
     stableUpdate((next) => {
       const cur = next[from];
@@ -359,22 +386,22 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
       if (!lead) return;
 
       if (!lead._stageMeta) lead._stageMeta = {};
-      // save from-stage state
-      lead._stageMeta[from] = { date: lead.date || "", time: lead.time || "" };
+      // save from-stage state INCLUDING comment
+      const fromSnap = lead._stageMeta[from] || {};
+      lead._stageMeta[from] = { date: lead.date || "", time: lead.time || "", comment: fromSnap.comment || "" };
 
       // remove from the source list
       next[from] = cur.filter((x) => x.id !== item.id);
 
-      const forward =
-        (from === "leads" && to === "interview") ||
-        (from === "interview" && to === "formation");
+      // restore previous values for target if any
+      const toSnap = (lead._stageMeta[to] || {});
+      const incoming = {
+        date: toSnap.date || "",
+        time: toSnap.time || "",
+      };
+      const withComment = toSnap.comment != null ? { comment: toSnap.comment } : {};
 
-      const prior = lead._stageMeta[to];
-      const incoming = forward
-        ? { date: "", time: "" }
-        : { date: prior?.date || "", time: prior?.time || "" };
-
-      next[to] = [...next[to], { ...lead, ...incoming }];
+      next[to] = [...(next[to] || []), { ...lead, ...incoming, ...withComment }];
     });
 
     addAuditLog({ area: "Inflow", action: "Move", from, to, lead: { id: item.id, name: item.name } });
@@ -396,7 +423,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     addAuditLog({ area: "Inflow", action: "Delete Lead", from, lead: { id: item.id, name: item.name } });
   };
 
-  // ---------- Importers (JSON/NDJSON/CSV) ----------
+  // ---------- Importers (JSON/NDJSON/CSV) (kept) ----------
   const parseMaybeCSV = (txt) => {
     const lines = txt.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     if (lines.length < 2) return [];
@@ -510,7 +537,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
 
       if (!leads.length) { alert("No valid leads found in file (missing name/phone/email)."); return; }
 
-      setPipeline((p) => ({ ...p, leads: [...leads, ...p.leads] }));
+      setPipeline((p) => ({ ...p, leads: [...leads, ...p.leads].sort(sortAsc) })); // sort after import
       addAuditLog({ area: "Inflow", action: "Import", source: "Indeed", count: leads.length });
       alert(`Imported ${leads.length} lead(s).`);
     } catch (e) {
@@ -546,6 +573,29 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
     setNotifyStage(null);
   };
 
+  // ---------- Comment modal ----------
+  const openComment = (section, id) => {
+    const list = pipeline?.[section] || [];
+    const row = list.find((r) => r.id === id);
+    const existing = row?._stageMeta?.[section]?.comment || "";
+    setCommentDlg({ open: true, section, id, value: existing });
+  };
+
+  const saveComment = () => {
+    const { section, id, value } = commentDlg;
+    if (!section || !id) { setCommentDlg({ open: false, section: null, id: null, value: "" }); return; }
+    stableUpdate((next) => {
+      next[section] = next[section].map((r) => {
+        if (r.id !== id) return r;
+        const meta = r._stageMeta || {};
+        const snap = meta[section] || {};
+        meta[section] = { ...snap, comment: value || "" };
+        return { ...r, _stageMeta: meta };
+      });
+    });
+    setCommentDlg({ open: false, section: null, id: null, value: "" });
+  };
+
   // ---------- Section renderer ----------
   const Section = ({ title, keyName, prev, nextKey, showCalls, enableHireDown }) => (
     <Card className="border-2">
@@ -577,7 +627,6 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                 const showBell = shouldShowBell(stage, x);
 
                 return (
-    <h1 style={{ color: "red", fontSize: "28px", textAlign: "center", padding: "12px 0" }}>✅ THIS IS THE REAL INFLOW FILE ✅</h1>
                   <tr key={x.id} className="border-t">
                     {/* NAME (editable) */}
                     <td className="p-3 font-medium min-w-0 overflow-hidden whitespace-nowrap">
@@ -650,7 +699,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                       />
                     </td>
 
-                    {/* CALLS — bigger input like before, but column width unchanged */}
+                    {/* CALLS — ghosted for Interview/Formation to keep alignment */}
                     <td className="p-3 text-center min-w-0 overflow-hidden whitespace-nowrap">
                       {showCalls ? (
                         <div className="mx-auto" style={{ width: 64 }}>
@@ -671,72 +720,89 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
                       )}
                     </td>
 
-                    {/* Actions — Bell • Up • Down • Trash (fixed slots) */}
-                    <td className="p-3 flex gap-2 justify-end items-center">
-                      {/* Bell */}
-                      <BtnSlot>
-                        {showBell && (
+                    {/* Actions — Comment • Bell • Up • Down • Trash (fixed slots) */}
+                    <td className="p-3">
+                      <div className="flex gap-2 justify-end items-center">
+                        {/* Comment */}
+                        <BtnSlot>
                           <Button
                             type="button"
                             size="sm"
                             variant="outline"
-                            title="Notify"
-                            className="p-0"
-                            style={{ background: "black", color: "white", width: BTN_W, height: BTN_H }}
-                            onClick={() => openNotify(x, stage)}
-                          >
-                            <Bell className="h-4 w-4" color="white" />
-                          </Button>
-                        )}
-                      </BtnSlot>
-
-                      {/* Up */}
-                      <BtnSlot>
-                        {prev && (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            title="Back"
+                            title="Comment"
                             className="p-0"
                             style={{ width: BTN_W, height: BTN_H }}
-                            onClick={() => move(x, keyName, prev)}
+                            onClick={() => openComment(stage, x.id)}
                           >
-                            <ChevronUp className="h-4 w-4" />
+                            <MessageCircle className="h-4 w-4" />
                           </Button>
-                        )}
-                      </BtnSlot>
+                        </BtnSlot>
 
-                      {/* Down (Formation -> Hire) */}
-                      <BtnSlot>
-                        {nextKey || enableHireDown ? (
+                        {/* Bell */}
+                        <BtnSlot>
+                          {showBell && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              title="Notify"
+                              className="p-0"
+                              style={{ background: "black", color: "white", width: BTN_W, height: BTN_H }}
+                              onClick={() => openNotify(x, stage)}
+                            >
+                              <Bell className="h-4 w-4" color="white" />
+                            </Button>
+                          )}
+                        </BtnSlot>
+
+                        {/* Up */}
+                        <BtnSlot>
+                          {prev && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              title="Back"
+                              className="p-0"
+                              style={{ width: BTN_W, height: BTN_H }}
+                              onClick={() => move(x, keyName, prev)}
+                            >
+                              <ChevronUp className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </BtnSlot>
+
+                        {/* Down (Formation -> Hire) */}
+                        <BtnSlot>
+                          {nextKey || enableHireDown ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              title={enableHireDown ? "Hire" : "Move"}
+                              className="p-0"
+                              style={{ width: BTN_W, height: BTN_H }}
+                              onClick={() => (enableHireDown ? hireFromFormation(x) : move(x, keyName, nextKey))}
+                            >
+                              <ChevronDown className="h-4 w-4" />
+                            </Button>
+                          ) : null}
+                        </BtnSlot>
+
+                        {/* Trash */}
+                        <BtnSlot>
                           <Button
                             type="button"
                             size="sm"
-                            variant="outline"
-                            title={enableHireDown ? "Hire" : "Move"}
+                            variant="destructive"
                             className="p-0"
                             style={{ width: BTN_W, height: BTN_H }}
-                            onClick={() => (enableHireDown ? hireFromFormation(x) : move(x, keyName, nextKey))}
+                            onClick={() => del(x, keyName)}
                           >
-                            <ChevronDown className="h-4 w-4" />
+                            <Trash2 className="h-4 w-4" />
                           </Button>
-                        ) : null}
-                      </BtnSlot>
-
-                      {/* Trash */}
-                      <BtnSlot>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="destructive"
-                          className="p-0"
-                          style={{ width: BTN_W, height: BTN_H }}
-                          onClick={() => del(x, keyName)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </BtnSlot>
+                        </BtnSlot>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -750,7 +816,6 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
 
   // --------- Toolbar & layout ----------
   return (
-    <h1 style={{ color: "red", fontSize: "28px", textAlign: "center", padding: "12px 0" }}>✅ THIS IS THE REAL INFLOW FILE ✅</h1>
     <div className="grid gap-4">
       <DateCenterStyle />
 
@@ -783,7 +848,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
       <AddLeadDialog
         open={addOpen}
         onOpenChange={setAddOpen}
-        onSave={(lead) => setPipeline((p) => ({ ...p, leads: [lead, ...p.leads] }))}
+        onSave={(lead) => setPipeline((p) => ({ ...p, leads: [lead, ...p.leads].sort(sortAsc) }))}
       />
 
       {/* Notify — language + message only (compact) */}
@@ -791,7 +856,7 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
         <DialogContent size="lg">
           <DialogHeader><DialogTitle className="text-center">Notify</DialogTitle></DialogHeader>
 
-        <div className="grid gap-3 place-items-center text-center">
+          <div className="grid gap-3 place-items-center text-center">
             {notifyLead && (
               <>
                 <div className="w-full max-w-xs">
@@ -826,6 +891,27 @@ export default function Inflow({ pipeline, setPipeline, onHire }) {
           <DialogFooter className="justify-center gap-2">
             <Button type="button" variant="outline" onClick={() => setNotifyOpen(false)}>Cancel</Button>
             <Button type="button" style={{ background: "black", color: "white" }} onClick={sendNotify}>Send</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Comment modal */}
+      <Dialog open={commentDlg.open} onOpenChange={(open) => setCommentDlg((d) => ({ ...d, open }))}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>Comment</DialogTitle></DialogHeader>
+          <div className="grid gap-2">
+            <Label htmlFor="comment">Notes about this person</Label>
+            <textarea
+              id="comment"
+              className="min-h-[140px] w-full border rounded-lg p-2 text-sm"
+              value={commentDlg.value}
+              onChange={(e) => setCommentDlg((d) => ({ ...d, value: e.target.value }))}
+              placeholder="Type notes here..."
+            />
+          </div>
+          <DialogFooter className="mt-2">
+            <Button variant="outline" onClick={() => setCommentDlg({ open: false, section: null, id: null, value: "" })}>Cancel</Button>
+            <Button onClick={saveComment}>Save</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
